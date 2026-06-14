@@ -13,9 +13,12 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default function KnowledgeGraphPage() {
-  const counts = contentCountByTopic();
-  const topics: KGTopic[] = listTopics().map((t) => ({
+export default async function KnowledgeGraphPage() {
+  const [counts, allTopics] = await Promise.all([
+    contentCountByTopic(),
+    listTopics(),
+  ]);
+  const topics: KGTopic[] = allTopics.map((t) => ({
     id: t.id,
     parentId: t.parentId,
     name: t.name,
@@ -26,7 +29,7 @@ export default function KnowledgeGraphPage() {
 
   const contentByTopic: Record<string, KGContentItem[]> = {};
   for (const t of topics) {
-    contentByTopic[t.id] = contentItemsForTopic(t.id).map((c) => ({
+    contentByTopic[t.id] = (await contentItemsForTopic(t.id)).map((c) => ({
       id: c.id,
       title: c.title,
       type: c.type,

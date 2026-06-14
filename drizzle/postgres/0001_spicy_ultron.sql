@@ -1,0 +1,22 @@
+CREATE INDEX "change_events_source_version_id_idx" ON "change_events" USING btree ("source_version_id");--> statement-breakpoint
+CREATE INDEX "change_events_change_type_idx" ON "change_events" USING btree ("change_type");--> statement-breakpoint
+CREATE INDEX "content_items_status_idx" ON "content_items" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "content_items_current_version_id_idx" ON "content_items" USING btree ("current_version_id");--> statement-breakpoint
+CREATE INDEX "content_items_last_healed_at_idx" ON "content_items" USING btree ("last_healed_at");--> statement-breakpoint
+CREATE INDEX "content_topics_content_item_id_idx" ON "content_topics" USING btree ("content_item_id");--> statement-breakpoint
+CREATE INDEX "content_topics_topic_id_idx" ON "content_topics" USING btree ("topic_id");--> statement-breakpoint
+CREATE INDEX "content_topics_content_item_topic_idx" ON "content_topics" USING btree ("content_item_id","topic_id");--> statement-breakpoint
+CREATE INDEX "content_versions_content_item_id_idx" ON "content_versions" USING btree ("content_item_id");--> statement-breakpoint
+CREATE INDEX "content_versions_status_idx" ON "content_versions" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "review_tasks_status_idx" ON "review_tasks" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "review_tasks_content_item_id_idx" ON "review_tasks" USING btree ("content_item_id");--> statement-breakpoint
+CREATE INDEX "review_tasks_change_event_id_idx" ON "review_tasks" USING btree ("change_event_id");--> statement-breakpoint
+CREATE INDEX "review_tasks_workflow_run_id_idx" ON "review_tasks" USING btree ("workflow_run_id");--> statement-breakpoint
+CREATE INDEX "review_tasks_created_at_idx" ON "review_tasks" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX "run_steps_workflow_run_id_idx" ON "run_steps" USING btree ("workflow_run_id");--> statement-breakpoint
+CREATE INDEX "run_steps_status_idx" ON "run_steps" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "source_versions_source_id_idx" ON "source_versions" USING btree ("source_id");--> statement-breakpoint
+CREATE INDEX "topics_parent_id_idx" ON "topics" USING btree ("parent_id");--> statement-breakpoint
+CREATE INDEX "topics_slug_idx" ON "topics" USING btree ("slug");--> statement-breakpoint
+CREATE INDEX "workflow_runs_status_idx" ON "workflow_runs" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "workflow_runs_kind_idx" ON "workflow_runs" USING btree ("kind");

@@ -1,16 +1,17 @@
 import Link from "next/link";
 import { ChevronRight, Gavel, ShieldCheck } from "lucide-react";
 
-import { listReviewTasks } from "@/db/queries";
+import { listReviewTasks, type ReviewTaskRow } from "@/db/queries";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { pct, relativeTime, scoreColor } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { decodeJson } from "@/db/exec";
 
 export const dynamic = "force-dynamic";
 
-export default function HealingCenterPage() {
-  const tasks = listReviewTasks();
+export default async function HealingCenterPage() {
+  const tasks = await listReviewTasks();
   const needsHuman = tasks.filter((t) => t.task.status === "needs_human");
   const others = tasks.filter((t) => t.task.status !== "needs_human");
 
@@ -54,7 +55,7 @@ function Section({
 }: {
   title: string;
   count: number;
-  tasks: ReturnType<typeof listReviewTasks>;
+  tasks: ReviewTaskRow[];
 }) {
   if (tasks.length === 0) return null;
   return (
@@ -64,9 +65,9 @@ function Section({
       </h2>
       <div className="space-y-2">
         {tasks.map(({ task, item }) => {
-          const evalScores = JSON.parse(task.evalScores || "{}");
-          const impact = JSON.parse(task.impact || "{}");
-          const reviewReason = JSON.parse(task.reviewReason || "{}");
+          const evalScores = decodeJson<{ verdict?: string }>(task.evalScores);
+          const impact = decodeJson<{ staleReason?: string }>(task.impact);
+          const reviewReason = decodeJson<{ kind?: string }>(task.reviewReason);
           const showPolicy =
             task.status === "needs_human" && reviewReason.kind === "policy";
           return (

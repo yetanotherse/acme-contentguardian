@@ -166,11 +166,39 @@ The mock (`src/mastra/mock/scenario.ts`) hard-codes a realistic Google Cloud Nex
 
 ---
 
+## 🗄️ Database strategy (local SQLite ⇄ production Supabase/Postgres)
+
+ContentGuardian runs on **SQLite locally** and **Supabase (Postgres + pgvector) in production**, selected automatically — additively, with zero change to the local flow.
+
+**Selection.** The client factory (`src/db/client.ts`) reads `DATABASE_URL`:
+- starts with `postgres://` / `postgresql://` → **Postgres** (postgres-js) using `schema.pg.ts`;
+- otherwise (default) → **SQLite** (better-sqlite3) using `schema.ts` — the zero-config local path.
+
+The rest of the app imports `{ db, schema, dialect }` and never branches on the database.
+
+**Why the data layer is `async`.** `better-sqlite3` is synchronous; every Vercel-compatible Postgres driver is asynchronous. To serve both behind one query layer, `src/db/queries.ts` is async. This changes only internal signatures — the local developer experience (commands, SQLite, zero config) is unchanged. The sync/async gap is absorbed by `rows/row/run` adapters in `src/db/exec.ts`.
+
+**What differs between dialects, and how it's bridged** (all in `src/db/exec.ts`):
+| Concern | SQLite | Postgres | Bridge |
+| --- | --- | --- | --- |
+| Execution | sync `.all/.get/.run` | awaited builder | `rows` / `row` / `run` |
+| JSON columns | `text` (strings) | `jsonb` (objects) | `encodeJson` / `decodeJson` |
+| Embeddings | `text` (JSON) + TS `cosineSimilarity` | `vector(1536)` (pgvector, native `<=>`-capable) | `toDbEmbedding` / `fromDbEmbedding` |
+| Timestamps | `strftime` ISO text | ISO text via `to_char(...)` | identical ISO strings |
+
+Embeddings are pinned to a single `EMBEDDING_DIM = 1536` (mock hashing + Gemini `outputDimensionality`) so the pgvector column is fixed-dimension and mock/real vectors are interchangeable.
+
+**Schema duplication is intentional (short-term).** `schema.ts` (SQLite) and `schema.pg.ts` (Postgres) are kept separate to avoid disturbing the proven local path; table/column names match exactly so `queries.ts` is dialect-agnostic. A future consolidation (e.g. a dialect-parameterized builder, or drizzle `text({mode:'json'})`) is possible once the dual path is battle-tested.
+
+> ⚠️ **Switching SQLite → Supabase requires a re-seed** (`npm run db:seed`). Embeddings live in a different storage and vector space and are not portable between the two.
+
+See **[Deploying to Vercel + Supabase](#-deploying-to-vercel--supabase)** for setup.
+
+---
+
 ## 🧠 Architecture decisions
 
-- **Drizzle + SQLite (better-sqlite3), not Postgres.** Enables true zero-config local dev (`npm run dev`, no services). The schema is written to port cleanly to Postgres:
-  - Embeddings are stored as JSON `TEXT` and compared with a TypeScript `cosineSimilarity` (`src/lib/embeddings.ts`). In production these become **pgvector** `vector` columns and similarity moves into the database (`<=>`), with the candidate pre-filter replaced by an indexed nearest-neighbor query. The `embedText`/`embedTexts` abstraction and the `*_embedding` columns are the only touch points.
-  - Swap `drizzle-orm/better-sqlite3` for `drizzle-orm/postgres-js` and update `drizzle.config.ts`; the query layer (`src/db/queries.ts`) is otherwise unchanged.
+- **Drizzle, dual-dialect: SQLite locally, Supabase/Postgres in production.** Enables true zero-config local dev (`npm run dev`, no services) while being one env var away from a stateful serverless deployment. Implemented via the client factory + exec adapters above — the query layer (`src/db/queries.ts`) is written once. In production, embeddings are real **pgvector** `vector` columns (indexable, native `<=>`); the fused impact *scoring* keeps TS `cosineSimilarity` in both dialects (it blends topic-overlap + severity, not a single kNN), and a `<=>` kNN prefilter is a drop-in for very large libraries.
 - **Mastra for orchestration.** It is TypeScript-native and gives first-class agents, tools, structured output (Zod), model routing, and observability with far less glue than hand-rolling AI SDK calls. The workflow orchestrators compose Mastra agents and persist their own step traces for full explainability in the UI.
 - **Gemini via the Vercel AI SDK.** Strong structured-output support; cheap `gemini-2.5-flash` for detect/impact/judge and `gemini-2.5-pro` for regeneration. Because Gemini rejects function-calling + a JSON response schema in one request, structured output uses a separate structuring pass (`src/mastra/llm.ts`). A retry/repair pass plus deterministic guardrails handle occasional malformed output.
 - **Deterministic mock fallback.** Documented above — a demo-only convenience.
@@ -184,11 +212,13 @@ src/
   app/                 # App Router pages + /api route handlers
   components/          # ShadCN UI + dashboard widgets, diff/trace/provenance views
   db/
-    schema.ts          # Drizzle schema (the data model)
-    client.ts          # better-sqlite3 + Drizzle client
-    queries.ts         # typed query layer
+    schema.ts          # SQLite schema (the data model)
+    schema.pg.ts       # Postgres mirror (jsonb + pgvector) for Supabase
+    client.ts          # dialect-selecting client factory ({ db, schema, dialect })
+    exec.ts            # sync/async + json + embedding dialect adapters
+    queries.ts         # typed, async, dialect-agnostic query layer
     seed-data.ts       # static PCA content + the simulated Cloud Next change
-    seed.ts / reset.ts # idempotent seeding
+    seed.ts / reset.ts # idempotent seeding (both dialects)
   lib/                 # embeddings (cosineSimilarity), providers (mock|gemini), formatting
   mastra/
     agents/            # the 4 agents
@@ -212,9 +242,35 @@ Vitest runs unit tests (cosine similarity, deterministic embeddings, guardrails 
 
 ---
 
-## ▲ Deploying to Vercel
+## ▲ Deploying to Vercel + Supabase
 
-The app builds with `npm run build` and deploys as a standard Next.js project. `better-sqlite3` and `@mastra/core` are declared in `serverExternalPackages`. For a stateful production deployment, migrate to Postgres + pgvector (see [Architecture decisions](#-architecture-decisions)) — Vercel's filesystem is ephemeral, so SQLite is for local/demo use. Set `GOOGLE_GENERATIVE_AI_API_KEY` in the project's environment variables to run on live Gemini.
+Vercel's filesystem is ephemeral, so production uses Supabase Postgres (with pgvector) instead of SQLite. The app already supports this — you only provide connection strings.
+
+**1. Create a Supabase project** (free tier is fine). The `vector` extension is created automatically by the first migration (`CREATE EXTENSION IF NOT EXISTS vector;`), or you can enable it under *Database → Extensions*.
+
+**2. Grab two connection strings** (Supabase → *Project Settings → Database*):
+- **Transaction pooler** (port **6543**, `?pgbouncer=true`) → `DATABASE_URL` (runtime; serverless-friendly).
+- **Direct** (port **5432**) → `DIRECT_URL` (migrations only).
+
+**3. Run migrations + seed against Supabase** (locally, once):
+```bash
+export DATABASE_URL="postgresql://…:6543/postgres?pgbouncer=true"
+export DIRECT_URL="postgresql://…:5432/postgres"
+export GOOGLE_GENERATIVE_AI_API_KEY="…"   # production should use real Gemini
+npm run db:migrate:pg   # applies drizzle/postgres/* (creates the vector extension)
+npm run db:seed         # seeds Supabase (detects Postgres from DATABASE_URL)
+```
+
+**4. Deploy to Vercel.** Import the repo and set Environment Variables:
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | Supabase **pooler** URL (port 6543, `?pgbouncer=true`) |
+| `DIRECT_URL` | Supabase **direct** URL (port 5432) |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | your Gemini key |
+
+`next build` runs as-is. `better-sqlite3`, `postgres`, and `@mastra/core` are declared in `serverExternalPackages`. postgres-js is initialized with `prepare: false` because the Supabase transaction pooler (pgBouncer) doesn't support prepared statements, and `max: 1` to keep the serverless connection footprint small.
+
+> The same code runs locally on SQLite with **no** `DATABASE_URL` set — nothing about local development changes.
 
 ---
 

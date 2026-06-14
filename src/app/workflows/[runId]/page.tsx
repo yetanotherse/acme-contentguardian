@@ -12,6 +12,7 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { TraceViewer } from "@/components/trace-viewer";
 import { formatDate, titleCase } from "@/lib/format";
+import { decodeJson } from "@/db/exec";
 
 export const dynamic = "force-dynamic";
 
@@ -21,11 +22,18 @@ export default async function WorkflowRunPage({
   params: Promise<{ runId: string }>;
 }) {
   const { runId } = await params;
-  const run = getWorkflowRun(runId);
+  const run = await getWorkflowRun(runId);
   if (!run) notFound();
-  const steps = getRunSteps(runId);
-  const summary = JSON.parse(run.summaryJson || "{}");
-  const input = JSON.parse(run.inputJson || "{}");
+  const steps = await getRunSteps(runId);
+  const summary = decodeJson<{
+    changesDetected?: number;
+    itemsImpacted?: number;
+    autoApproved?: number;
+    needsReview?: number;
+  }>(run.summaryJson);
+  const input = decodeJson<{ trigger?: string; provider?: string }>(
+    run.inputJson,
+  );
 
   return (
     <div className="space-y-5 max-w-4xl">

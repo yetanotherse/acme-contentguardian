@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { ScanButton } from "@/components/workflows/scan-button";
 import { formatDate, titleCase } from "@/lib/format";
+import { decodeJson } from "@/db/exec";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +16,19 @@ const KIND_LABEL: Record<string, string> = {
   feedback_loop: "Feedback incorporation",
 };
 
-export default function WorkflowsPage() {
-  const runs = listWorkflowRuns();
+export default async function WorkflowsPage() {
+  const runList = await listWorkflowRuns();
+  const runs = await Promise.all(
+    runList.map(async (run) => ({
+      run,
+      summary: decodeJson<{
+        itemsImpacted?: number;
+        autoApproved?: number;
+        needsReview?: number;
+      }>(run.summaryJson),
+      stepCount: (await getRunSteps(run.id)).length,
+    })),
+  );
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -44,9 +56,7 @@ export default function WorkflowsPage() {
         </Card>
       ) : (
         <div className="space-y-2">
-          {runs.map((run) => {
-            const summary = JSON.parse(run.summaryJson || "{}");
-            const stepCount = getRunSteps(run.id).length;
+          {runs.map(({ run, summary, stepCount }) => {
             return (
               <Link key={run.id} href={`/workflows/${run.id}`}>
                 <Card className="transition-colors hover:border-primary/40">
