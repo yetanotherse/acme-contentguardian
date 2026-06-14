@@ -1,0 +1,1 @@
+ALTER TABLE `review_tasks` ADD `review_reason` text DEFAULT '{}' NOT NULL;

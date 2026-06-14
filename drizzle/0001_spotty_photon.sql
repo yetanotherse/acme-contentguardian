@@ -1,0 +1,1 @@
+ALTER TABLE `review_tasks` ADD `base_version_id` text REFERENCES content_versions(id);
