@@ -24,23 +24,57 @@ interface SyncRun {
   run: () => unknown;
 }
 
-export async function rows<T>(qb: unknown): Promise<T[]> {
-  if (dialect === "sqlite") return (qb as SyncSelect<T>).all();
-  return (await (qb as Promise<T[]>)) ?? [];
-}
+/** Set DB_DEBUG=1 to log every query's SQL + duration to the server console
+ * (visible in `next dev` and Vercel function logs) — useful for pinpointing a
+ * slow or hanging query. No-op (zero overhead) when unset. */
+const DB_DEBUG = !!process.env.DB_DEBUG;
 
-export async function row<T>(qb: unknown): Promise<T | undefined> {
-  if (dialect === "sqlite") return (qb as SyncSelect<T>).get();
-  const result = (await (qb as Promise<T[]>)) ?? [];
-  return result[0];
-}
-
-export async function run(qb: unknown): Promise<void> {
-  if (dialect === "sqlite") {
-    (qb as SyncRun).run();
-    return;
+function sqlLabel(qb: unknown): string {
+  try {
+    const sql = (qb as { toSQL?: () => { sql: string } }).toSQL?.().sql;
+    return sql ? sql.replace(/\s+/g, " ").slice(0, 100) : "query";
+  } catch {
+    return "query";
   }
-  await (qb as Promise<unknown>);
+}
+
+async function timed<T>(qb: unknown, exec: () => Promise<T>): Promise<T> {
+  if (!DB_DEBUG) return exec();
+  const start = Date.now();
+  const label = sqlLabel(qb);
+  try {
+    const result = await exec();
+    console.log(`[db ${dialect}] ${Date.now() - start}ms · ${label}`);
+    return result;
+  } catch (error) {
+    console.error(`[db ${dialect}] FAILED ${Date.now() - start}ms · ${label}`, error);
+    throw error;
+  }
+}
+
+export function rows<T>(qb: unknown): Promise<T[]> {
+  return timed(qb, async () => {
+    if (dialect === "sqlite") return (qb as SyncSelect<T>).all();
+    return (await (qb as Promise<T[]>)) ?? [];
+  });
+}
+
+export function row<T>(qb: unknown): Promise<T | undefined> {
+  return timed(qb, async () => {
+    if (dialect === "sqlite") return (qb as SyncSelect<T>).get();
+    const result = (await (qb as Promise<T[]>)) ?? [];
+    return result[0];
+  });
+}
+
+export function run(qb: unknown): Promise<void> {
+  return timed(qb, async () => {
+    if (dialect === "sqlite") {
+      (qb as SyncRun).run();
+      return;
+    }
+    await (qb as Promise<unknown>);
+  });
 }
 
 // ---------------------------------------------------------------------------
