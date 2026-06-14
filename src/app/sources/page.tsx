@@ -25,8 +25,19 @@ const KIND_LABEL: Record<string, string> = {
   best_practices: "Best Practices",
 };
 
-export default function SourcesPage() {
-  const sources = listSources();
+export default async function SourcesPage() {
+  const sources = await listSources();
+  const sourceData = await Promise.all(
+    sources.map(async (source) => {
+      const versions = await getSourceVersions(source.id);
+      const latest = versions[0];
+      const previous = versions[1];
+      const changes = latest
+        ? await getChangeEventsForVersions([latest.id])
+        : [];
+      return { source, versions, latest, previous, changes };
+    }),
+  );
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -51,13 +62,7 @@ export default function SourcesPage() {
       </Alert>
 
       <div className="space-y-5">
-        {sources.map((source) => {
-          const versions = getSourceVersions(source.id);
-          const latest = versions[0];
-          const previous = versions[1];
-          const changes = latest
-            ? getChangeEventsForVersions([latest.id])
-            : [];
+        {sourceData.map(({ source, versions, latest, previous, changes }) => {
           return (
             <Card key={source.id}>
               <CardHeader className="pb-3">

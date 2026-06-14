@@ -3,8 +3,9 @@
  * inline edits), or reject (which kicks off the feedback-incorporation loop).
  */
 import { bodyToText, type ContentBody } from "@/lib/content-types";
-import { embedText, serializeEmbedding } from "@/lib/embeddings";
+import { embedText } from "@/lib/embeddings";
 import { nowIso } from "@/lib/ids";
+import { decodeJson, toDbEmbedding } from "@/db/exec";
 
 import {
   getContentItem,
@@ -28,30 +29,32 @@ export async function approveTask(
   taskId: string,
   editedBody?: ContentBody,
 ): Promise<ApproveResult> {
-  const task = getReviewTask(taskId);
+  const task = await getReviewTask(taskId);
   if (!task) throw new Error(`Review task ${taskId} not found.`);
   if (!task.proposedVersionId) {
     throw new Error(`Task ${taskId} has no proposed version.`);
   }
-  const version = getContentVersion(task.proposedVersionId);
+  const version = await getContentVersion(task.proposedVersionId);
   if (!version) throw new Error("Proposed version not found.");
-  const item = getContentItem(task.contentItemId);
+  const item = await getContentItem(task.contentItemId);
   if (!item) throw new Error("Content item not found.");
 
   if (editedBody) {
     const text = bodyToText(item.type, editedBody);
     const embedding = await embedText(text);
-    const prevContext = JSON.parse(version.agentContext || "{}");
-    updateContentVersionBody(
+    const prevContext = decodeJson<Record<string, unknown>>(
+      version.agentContext,
+    );
+    await updateContentVersionBody(
       version.id,
-      JSON.stringify(editedBody),
-      serializeEmbedding(embedding),
+      editedBody,
+      toDbEmbedding(embedding),
       { ...prevContext, humanEdited: true, editedAt: nowIso() },
     );
   }
 
-  promoteVersion(task.contentItemId, task.proposedVersionId);
-  updateReviewTask(taskId, {
+  await promoteVersion(task.contentItemId, task.proposedVersionId);
+  await updateReviewTask(taskId, {
     status: "approved",
     resolvedAt: nowIso(),
   });

@@ -24,14 +24,18 @@ import { StalenessChart } from "@/components/dashboard/staleness-chart";
 import { changeTypeColor, pct, relativeTime, titleCase } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { decodeJson } from "@/db/exec";
 
 export const dynamic = "force-dynamic";
 
-export default function OverviewPage() {
-  const metrics = dashboardMetrics();
-  const reviews = listReviewTasks("needs_human").slice(0, 5);
-  const runs = listWorkflowRuns(5);
-  const changes = recentChangeEvents(5);
+export default async function OverviewPage() {
+  const [metrics, allReviews, runs, changes] = await Promise.all([
+    dashboardMetrics(),
+    listReviewTasks("needs_human"),
+    listWorkflowRuns(5),
+    recentChangeEvents(5),
+  ]);
+  const reviews = allReviews.slice(0, 5);
 
   const chartData = [
     { status: "Fresh", count: metrics.statusCounts.fresh },
@@ -144,7 +148,9 @@ export default function OverviewPage() {
               <p className="text-sm text-muted-foreground">No runs yet.</p>
             ) : (
               runs.map((run) => {
-                const summary = JSON.parse(run.summaryJson || "{}");
+                const summary = decodeJson<{ itemsImpacted?: number }>(
+                  run.summaryJson,
+                );
                 return (
                   <Link
                     key={run.id}

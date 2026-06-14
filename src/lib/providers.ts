@@ -24,8 +24,16 @@ const MODEL_IDS: Record<ModelTier, string> = {
   pro: "gemini-2.5-pro",
 };
 
-/** Embedding dimensionality used in MOCK mode (feature-hashing buckets). */
-export const MOCK_EMBED_DIM = 256;
+/**
+ * Single embedding dimensionality used by BOTH the deterministic mock
+ * (feature-hashing buckets) and live Gemini (`outputDimensionality`). Keeping
+ * one fixed dimension lets the Postgres `vector(EMBEDDING_DIM)` column be
+ * well-defined and makes mock/real embeddings interchangeable.
+ */
+export const EMBEDDING_DIM = 1536;
+
+/** @deprecated use EMBEDDING_DIM — kept as an alias for back-compat. */
+export const MOCK_EMBED_DIM = EMBEDDING_DIM;
 // Gemini API (v1beta) GA embedding model. The older `text-embedding-004` is no
 // longer served on this endpoint and returns a "model not found" error.
 export const EMBED_MODEL_ID = "gemini-embedding-001";
@@ -65,10 +73,16 @@ export function getLanguageModel(tier: ModelTier) {
   return googleProvider()(MODEL_IDS[tier]);
 }
 
-/** AI SDK embedding model (REAL mode only). */
+/** AI SDK embedding model (REAL mode only). Dimensionality is pinned via
+ * provider options at the embed() call site (see src/lib/embeddings.ts). */
 export function getEmbeddingModel() {
   return googleProvider().textEmbeddingModel(EMBED_MODEL_ID);
 }
+
+/** Provider options pinning Gemini embedding output to EMBEDDING_DIM. */
+export const embeddingProviderOptions = {
+  google: { outputDimensionality: EMBEDDING_DIM },
+} as const;
 
 export function modelId(tier: ModelTier): string {
   return MODEL_IDS[tier];

@@ -6,7 +6,7 @@ import {
   parseEmbedding,
   serializeEmbedding,
 } from "./embeddings";
-import { MOCK_EMBED_DIM } from "./providers";
+import { EMBEDDING_DIM } from "./providers";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -29,7 +29,7 @@ describe("hashEmbedding", () => {
     const a = hashEmbedding("Infrastructure Manager deployment");
     const b = hashEmbedding("Infrastructure Manager deployment");
     expect(a).toEqual(b);
-    expect(a).toHaveLength(MOCK_EMBED_DIM);
+    expect(a).toHaveLength(EMBEDDING_DIM);
   });
 
   it("scores shared-vocabulary text higher than unrelated text", () => {

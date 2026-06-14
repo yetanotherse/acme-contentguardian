@@ -1,13 +1,18 @@
 /**
  * Typed query helpers over the Drizzle client. Centralizes all DB access used by
  * the Mastra workflows, API routes, and UI server components.
+ *
+ * Dialect-agnostic: every statement runs through the `rows/row/run` adapters
+ * (sync better-sqlite3 vs async postgres-js), JSON columns through
+ * `encodeJson`/`decodeJson` (text vs jsonb), and embeddings through
+ * `toDbEmbedding`/`fromDbEmbedding` (text vs vector). All functions are async.
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
-import { parseEmbedding } from "@/lib/embeddings";
-import { newId } from "@/lib/ids";
+import { newId, nowIso } from "@/lib/ids";
 
 import { db, schema } from "./client";
+import { encodeJson, fromDbEmbedding, row, rows, run } from "./exec";
 import type {
   ChangeEvent,
   ChangeType,
@@ -38,195 +43,211 @@ const {
   workflowRuns,
 } = schema;
 
+/** Coerce a SQL aggregate (Postgres returns bigint/numeric as string) to number. */
+const num = (v: unknown): number => Number(v ?? 0);
+
 // ---------------------------------------------------------------------------
 // Sources & versions
 // ---------------------------------------------------------------------------
 
-export function listSources(): Source[] {
-  return db.select().from(sources).all();
+export function listSources(): Promise<Source[]> {
+  return rows<Source>(db.select().from(sources));
 }
 
-export function getSourceVersions(sourceId: string): SourceVersion[] {
-  return db
-    .select()
-    .from(sourceVersions)
-    .where(eq(sourceVersions.sourceId, sourceId))
-    .orderBy(desc(sourceVersions.version))
-    .all();
+export function getSourceVersions(sourceId: string): Promise<SourceVersion[]> {
+  return rows<SourceVersion>(
+    db
+      .select()
+      .from(sourceVersions)
+      .where(eq(sourceVersions.sourceId, sourceId))
+      .orderBy(desc(sourceVersions.version)),
+  );
 }
 
-export function getLatestSourceVersion(
+export async function getLatestSourceVersion(
   sourceId: string,
-): SourceVersion | undefined {
-  return getSourceVersions(sourceId)[0];
+): Promise<SourceVersion | undefined> {
+  return (await getSourceVersions(sourceId))[0];
 }
 
 export function getSourceVersionById(
   id: string,
-): SourceVersion | undefined {
-  return db
-    .select()
-    .from(sourceVersions)
-    .where(eq(sourceVersions.id, id))
-    .get();
+): Promise<SourceVersion | undefined> {
+  return row<SourceVersion>(
+    db.select().from(sourceVersions).where(eq(sourceVersions.id, id)),
+  );
 }
 
-export function getSourceVersionsByIds(ids: string[]): SourceVersion[] {
+export async function getSourceVersionsByIds(
+  ids: string[],
+): Promise<SourceVersion[]> {
   if (ids.length === 0) return [];
-  return db
-    .select()
-    .from(sourceVersions)
-    .where(inArray(sourceVersions.id, ids))
-    .all();
+  return rows<SourceVersion>(
+    db.select().from(sourceVersions).where(inArray(sourceVersions.id, ids)),
+  );
 }
 
-export function insertSourceVersion(input: {
+export async function insertSourceVersion(input: {
   id: string;
   sourceId: string;
   version: number;
   title: string;
   body: string;
   embedding: string;
-}): void {
-  db.insert(sourceVersions).values(input).run();
+}): Promise<void> {
+  await run(db.insert(sourceVersions).values(input));
 }
 
-export function listSourceVersions(): (SourceVersion & {
-  sourceName: string;
-})[] {
-  return db
-    .select({
-      id: sourceVersions.id,
-      sourceId: sourceVersions.sourceId,
-      version: sourceVersions.version,
-      title: sourceVersions.title,
-      body: sourceVersions.body,
-      embedding: sourceVersions.embedding,
-      createdAt: sourceVersions.createdAt,
-      sourceName: sources.name,
-    })
-    .from(sourceVersions)
-    .innerJoin(sources, eq(sources.id, sourceVersions.sourceId))
-    .orderBy(desc(sourceVersions.createdAt))
-    .all();
+export function listSourceVersions(): Promise<
+  (SourceVersion & { sourceName: string })[]
+> {
+  return rows(
+    db
+      .select({
+        id: sourceVersions.id,
+        sourceId: sourceVersions.sourceId,
+        version: sourceVersions.version,
+        title: sourceVersions.title,
+        body: sourceVersions.body,
+        embedding: sourceVersions.embedding,
+        createdAt: sourceVersions.createdAt,
+        sourceName: sources.name,
+      })
+      .from(sourceVersions)
+      .innerJoin(sources, eq(sources.id, sourceVersions.sourceId))
+      .orderBy(desc(sourceVersions.createdAt)),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Change events
 // ---------------------------------------------------------------------------
 
-export function insertChangeEvent(input: {
+export async function insertChangeEvent(input: {
   sourceVersionId: string;
   changeType: ChangeType;
   summary: string;
   detail: string;
   severity: number;
   affectedTopics: string[];
-}): ChangeEvent {
-  const row = {
-    id: newId("ce"),
-    sourceVersionId: input.sourceVersionId,
-    changeType: input.changeType,
-    summary: input.summary,
-    detail: input.detail,
-    severity: input.severity,
-    affectedTopics: JSON.stringify(input.affectedTopics),
-  };
-  db.insert(changeEvents).values(row).run();
-  return db.select().from(changeEvents).where(eq(changeEvents.id, row.id)).get()!;
+}): Promise<ChangeEvent> {
+  const id = newId("ce");
+  await run(
+    db.insert(changeEvents).values({
+      id,
+      sourceVersionId: input.sourceVersionId,
+      changeType: input.changeType,
+      summary: input.summary,
+      detail: input.detail,
+      severity: input.severity,
+      affectedTopics: encodeJson(input.affectedTopics) as string,
+    }),
+  );
+  return (await row<ChangeEvent>(
+    db.select().from(changeEvents).where(eq(changeEvents.id, id)),
+  ))!;
 }
 
-export function getChangeEventsForVersions(
+export async function getChangeEventsForVersions(
   versionIds: string[],
-): ChangeEvent[] {
+): Promise<ChangeEvent[]> {
   if (versionIds.length === 0) return [];
-  return db
-    .select()
-    .from(changeEvents)
-    .where(inArray(changeEvents.sourceVersionId, versionIds))
-    .all();
+  return rows<ChangeEvent>(
+    db
+      .select()
+      .from(changeEvents)
+      .where(inArray(changeEvents.sourceVersionId, versionIds)),
+  );
 }
 
-export function recentChangeEvents(limit = 20): (ChangeEvent & {
-  sourceVersionTitle: string;
-})[] {
-  return db
-    .select({
-      id: changeEvents.id,
-      sourceVersionId: changeEvents.sourceVersionId,
-      changeType: changeEvents.changeType,
-      summary: changeEvents.summary,
-      detail: changeEvents.detail,
-      severity: changeEvents.severity,
-      affectedTopics: changeEvents.affectedTopics,
-      createdAt: changeEvents.createdAt,
-      sourceVersionTitle: sourceVersions.title,
-    })
-    .from(changeEvents)
-    .innerJoin(
-      sourceVersions,
-      eq(sourceVersions.id, changeEvents.sourceVersionId),
-    )
-    .orderBy(desc(changeEvents.createdAt))
-    .limit(limit)
-    .all();
+export function recentChangeEvents(
+  limit = 20,
+): Promise<(ChangeEvent & { sourceVersionTitle: string })[]> {
+  return rows(
+    db
+      .select({
+        id: changeEvents.id,
+        sourceVersionId: changeEvents.sourceVersionId,
+        changeType: changeEvents.changeType,
+        summary: changeEvents.summary,
+        detail: changeEvents.detail,
+        severity: changeEvents.severity,
+        affectedTopics: changeEvents.affectedTopics,
+        createdAt: changeEvents.createdAt,
+        sourceVersionTitle: sourceVersions.title,
+      })
+      .from(changeEvents)
+      .innerJoin(
+        sourceVersions,
+        eq(sourceVersions.id, changeEvents.sourceVersionId),
+      )
+      .orderBy(desc(changeEvents.createdAt))
+      .limit(limit),
+  );
+}
+
+export function getChangeEventById(
+  id: string,
+): Promise<ChangeEvent | undefined> {
+  return row<ChangeEvent>(
+    db.select().from(changeEvents).where(eq(changeEvents.id, id)),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Topics (knowledge graph)
 // ---------------------------------------------------------------------------
 
-export function listTopics(): Topic[] {
-  return db.select().from(topics).all();
+export function listTopics(): Promise<Topic[]> {
+  return rows<Topic>(db.select().from(topics));
 }
 
 /** Count of content items linked to each topic id. */
-export function contentCountByTopic(): Record<string, number> {
-  const rows = db
-    .select({
-      topicId: contentTopics.topicId,
-      count: sql<number>`COUNT(*)`,
-    })
-    .from(contentTopics)
-    .groupBy(contentTopics.topicId)
-    .all();
-  return Object.fromEntries(rows.map((r) => [r.topicId, r.count]));
+export async function contentCountByTopic(): Promise<Record<string, number>> {
+  const result = await rows<{ topicId: string; count: number }>(
+    db
+      .select({ topicId: contentTopics.topicId, count: sql<number>`COUNT(*)` })
+      .from(contentTopics)
+      .groupBy(contentTopics.topicId),
+  );
+  return Object.fromEntries(result.map((r) => [r.topicId, num(r.count)]));
 }
 
 /** Content items (with title/type/status) linked to a topic id. */
-export function contentItemsForTopic(topicId: string): ContentItem[] {
-  return db
-    .select({
-      id: contentItems.id,
-      type: contentItems.type,
-      title: contentItems.title,
-      status: contentItems.status,
-      currentVersionId: contentItems.currentVersionId,
-      confidence: contentItems.confidence,
-      lastHealedAt: contentItems.lastHealedAt,
-      createdAt: contentItems.createdAt,
-    })
-    .from(contentTopics)
-    .innerJoin(contentItems, eq(contentItems.id, contentTopics.contentItemId))
-    .where(eq(contentTopics.topicId, topicId))
-    .all();
+export function contentItemsForTopic(topicId: string): Promise<ContentItem[]> {
+  return rows<ContentItem>(
+    db
+      .select({
+        id: contentItems.id,
+        type: contentItems.type,
+        title: contentItems.title,
+        status: contentItems.status,
+        currentVersionId: contentItems.currentVersionId,
+        confidence: contentItems.confidence,
+        lastHealedAt: contentItems.lastHealedAt,
+        createdAt: contentItems.createdAt,
+      })
+      .from(contentTopics)
+      .innerJoin(contentItems, eq(contentItems.id, contentTopics.contentItemId))
+      .where(eq(contentTopics.topicId, topicId)),
+  );
 }
 
-export function getTopicsBySlugs(slugs: string[]): Topic[] {
+export async function getTopicsBySlugs(slugs: string[]): Promise<Topic[]> {
   if (slugs.length === 0) return [];
-  return db.select().from(topics).where(inArray(topics.slug, slugs)).all();
+  return rows<Topic>(
+    db.select().from(topics).where(inArray(topics.slug, slugs)),
+  );
 }
 
 /** Topic subtree (the matched topics plus their direct children) for grounding. */
-export function getTopicContext(slugs: string[]): Topic[] {
-  const matched = getTopicsBySlugs(slugs);
+export async function getTopicContext(slugs: string[]): Promise<Topic[]> {
+  const matched = await getTopicsBySlugs(slugs);
   if (matched.length === 0) return [];
   const ids = matched.map((t) => t.id);
-  const children = db
-    .select()
-    .from(topics)
-    .where(inArray(topics.parentId, ids))
-    .all();
+  const children = await rows<Topic>(
+    db.select().from(topics).where(inArray(topics.parentId, ids)),
+  );
   const seen = new Set<string>();
   return [...matched, ...children].filter((t) => {
     if (seen.has(t.id)) return false;
@@ -247,149 +268,160 @@ export interface ContentCandidate {
 }
 
 /** All content items joined with their current live version + topic slugs. */
-export function getContentCandidates(): ContentCandidate[] {
-  const items = db.select().from(contentItems).all();
-  return items
-    .map((item): ContentCandidate | null => {
-      if (!item.currentVersionId) return null;
-      const version = db
-        .select()
-        .from(contentVersions)
-        .where(eq(contentVersions.id, item.currentVersionId))
-        .get();
-      if (!version) return null;
-      const slugs = db
+export async function getContentCandidates(): Promise<ContentCandidate[]> {
+  const items = await rows<ContentItem>(db.select().from(contentItems));
+  const candidates: ContentCandidate[] = [];
+  for (const item of items) {
+    if (!item.currentVersionId) continue;
+    const version = await getContentVersion(item.currentVersionId);
+    if (!version) continue;
+    const slugRows = await rows<{ slug: string }>(
+      db
         .select({ slug: topics.slug })
         .from(contentTopics)
         .innerJoin(topics, eq(topics.id, contentTopics.topicId))
-        .where(eq(contentTopics.contentItemId, item.id))
-        .all()
-        .map((r) => r.slug);
-      return {
-        item,
-        version,
-        embedding: parseEmbedding(version.embedding),
-        topicSlugs: slugs,
-      };
-    })
-    .filter((c): c is ContentCandidate => c !== null);
+        .where(eq(contentTopics.contentItemId, item.id)),
+    );
+    candidates.push({
+      item,
+      version,
+      embedding: fromDbEmbedding(version.embedding),
+      topicSlugs: slugRows.map((r) => r.slug),
+    });
+  }
+  return candidates;
 }
 
-export function getContentItem(id: string): ContentItem | undefined {
-  return db.select().from(contentItems).where(eq(contentItems.id, id)).get();
+export function getContentItem(id: string): Promise<ContentItem | undefined> {
+  return row<ContentItem>(
+    db.select().from(contentItems).where(eq(contentItems.id, id)),
+  );
 }
 
-export function getContentVersion(id: string): ContentVersion | undefined {
-  return db
-    .select()
-    .from(contentVersions)
-    .where(eq(contentVersions.id, id))
-    .get();
+export function getContentVersion(
+  id: string,
+): Promise<ContentVersion | undefined> {
+  return row<ContentVersion>(
+    db.select().from(contentVersions).where(eq(contentVersions.id, id)),
+  );
 }
 
-export function getContentVersions(itemId: string): ContentVersion[] {
-  return db
-    .select()
-    .from(contentVersions)
-    .where(eq(contentVersions.contentItemId, itemId))
-    .orderBy(desc(contentVersions.version))
-    .all();
+export function getContentVersions(
+  itemId: string,
+): Promise<ContentVersion[]> {
+  return rows<ContentVersion>(
+    db
+      .select()
+      .from(contentVersions)
+      .where(eq(contentVersions.contentItemId, itemId))
+      .orderBy(desc(contentVersions.version)),
+  );
 }
 
-export function getTopicSlugsForItem(itemId: string): string[] {
-  return db
-    .select({ slug: topics.slug })
-    .from(contentTopics)
-    .innerJoin(topics, eq(topics.id, contentTopics.topicId))
-    .where(eq(contentTopics.contentItemId, itemId))
-    .all()
-    .map((r) => r.slug);
+export async function getTopicSlugsForItem(itemId: string): Promise<string[]> {
+  const slugRows = await rows<{ slug: string }>(
+    db
+      .select({ slug: topics.slug })
+      .from(contentTopics)
+      .innerJoin(topics, eq(topics.id, contentTopics.topicId))
+      .where(eq(contentTopics.contentItemId, itemId)),
+  );
+  return slugRows.map((r) => r.slug);
 }
 
-export function nextContentVersionNumber(itemId: string): number {
-  const row = db
-    .select({ max: sql<number>`COALESCE(MAX(${contentVersions.version}), 0)` })
-    .from(contentVersions)
-    .where(eq(contentVersions.contentItemId, itemId))
-    .get();
-  return (row?.max ?? 0) + 1;
+export async function nextContentVersionNumber(
+  itemId: string,
+): Promise<number> {
+  const r = await row<{ max: number }>(
+    db
+      .select({ max: sql<number>`COALESCE(MAX(${contentVersions.version}), 0)` })
+      .from(contentVersions)
+      .where(eq(contentVersions.contentItemId, itemId)),
+  );
+  return num(r?.max) + 1;
 }
 
-export function insertProposedVersion(input: {
+export async function insertProposedVersion(input: {
   contentItemId: string;
   version: number;
-  bodyJson: string;
+  bodyJson: unknown;
   embedding: string;
   sourceVersionIds: string[];
   kgSnapshot: unknown;
   agentContext: unknown;
-}): string {
+}): Promise<string> {
   const id = newId("cv");
-  db.insert(contentVersions)
-    .values({
+  await run(
+    db.insert(contentVersions).values({
       id,
       contentItemId: input.contentItemId,
       version: input.version,
-      bodyJson: input.bodyJson,
+      bodyJson: encodeJson(input.bodyJson) as string,
       embedding: input.embedding,
-      sourceVersionIds: JSON.stringify(input.sourceVersionIds),
-      kgSnapshot: JSON.stringify(input.kgSnapshot),
-      agentContext: JSON.stringify(input.agentContext),
+      sourceVersionIds: encodeJson(input.sourceVersionIds) as string,
+      kgSnapshot: encodeJson(input.kgSnapshot) as string,
+      agentContext: encodeJson(input.agentContext) as string,
       status: "proposed",
-    })
-    .run();
+    }),
+  );
   return id;
 }
 
-export function updateContentVersionBody(
+export async function updateContentVersionBody(
   versionId: string,
-  bodyJson: string,
+  bodyJson: unknown,
   embedding: string,
   agentContext?: unknown,
-): void {
-  const patch: Partial<typeof contentVersions.$inferInsert> = {
-    bodyJson,
+): Promise<void> {
+  const patch: Record<string, unknown> = {
+    bodyJson: encodeJson(bodyJson),
     embedding,
   };
   if (agentContext !== undefined) {
-    patch.agentContext = JSON.stringify(agentContext);
+    patch.agentContext = encodeJson(agentContext);
   }
-  db.update(contentVersions)
-    .set(patch)
-    .where(eq(contentVersions.id, versionId))
-    .run();
+  await run(
+    db.update(contentVersions).set(patch).where(eq(contentVersions.id, versionId)),
+  );
 }
 
-export function setContentItemStatus(
+export async function setContentItemStatus(
   itemId: string,
   status: ContentStatus,
-): void {
-  db.update(contentItems)
-    .set({ status })
-    .where(eq(contentItems.id, itemId))
-    .run();
+): Promise<void> {
+  await run(
+    db.update(contentItems).set({ status }).where(eq(contentItems.id, itemId)),
+  );
 }
 
 /** Item ids linked to any of the given topic slugs (via the join table). */
-export function getContentItemIdsByTopics(slugs: string[]): string[] {
+export async function getContentItemIdsByTopics(
+  slugs: string[],
+): Promise<string[]> {
   if (slugs.length === 0) return [];
-  const rows = db
-    .selectDistinct({ id: contentTopics.contentItemId })
-    .from(contentTopics)
-    .innerJoin(topics, eq(topics.id, contentTopics.topicId))
-    .where(inArray(topics.slug, slugs))
-    .all();
-  return rows.map((r) => r.id);
+  const idRows = await rows<{ id: string }>(
+    db
+      .selectDistinct({ id: contentTopics.contentItemId })
+      .from(contentTopics)
+      .innerJoin(topics, eq(topics.id, contentTopics.topicId))
+      .where(inArray(topics.slug, slugs)),
+  );
+  return idRows.map((r) => r.id);
 }
 
 /** Mark content linked to the given topics as stale and lower its confidence. */
-export function markStaleByTopics(slugs: string[], confidence = 0.4): number {
-  const ids = getContentItemIdsByTopics(slugs);
+export async function markStaleByTopics(
+  slugs: string[],
+  confidence = 0.4,
+): Promise<number> {
+  const ids = await getContentItemIdsByTopics(slugs);
   for (const id of ids) {
-    db.update(contentItems)
-      .set({ status: "stale", confidence })
-      .where(and(eq(contentItems.id, id), eq(contentItems.status, "fresh")))
-      .run();
+    await run(
+      db
+        .update(contentItems)
+        .set({ status: "stale", confidence })
+        .where(and(eq(contentItems.id, id), eq(contentItems.status, "fresh"))),
+    );
   }
   return ids.length;
 }
@@ -398,38 +430,40 @@ export function markStaleByTopics(slugs: string[], confidence = 0.4): number {
 // Workflow runs + step traces
 // ---------------------------------------------------------------------------
 
-export function createWorkflowRun(input: {
+export async function createWorkflowRun(input: {
   kind: WorkflowKind;
   input: unknown;
-}): string {
+}): Promise<string> {
   const id = newId("run");
-  db.insert(workflowRuns)
-    .values({
+  await run(
+    db.insert(workflowRuns).values({
       id,
       kind: input.kind,
       status: "running",
-      inputJson: JSON.stringify(input.input ?? {}),
-    })
-    .run();
+      inputJson: encodeJson(input.input) as string,
+    }),
+  );
   return id;
 }
 
-export function finishWorkflowRun(
+export async function finishWorkflowRun(
   id: string,
   status: WorkflowStatus,
   summary: unknown,
-): void {
-  db.update(workflowRuns)
-    .set({
-      status,
-      summaryJson: JSON.stringify(summary ?? {}),
-      finishedAt: sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-    })
-    .where(eq(workflowRuns.id, id))
-    .run();
+): Promise<void> {
+  await run(
+    db
+      .update(workflowRuns)
+      .set({
+        status,
+        summaryJson: encodeJson(summary) as string,
+        finishedAt: nowIso(),
+      })
+      .where(eq(workflowRuns.id, id)),
+  );
 }
 
-export function addRunStep(input: {
+export async function addRunStep(input: {
   workflowRunId: string;
   agent: string;
   step: string;
@@ -439,50 +473,54 @@ export function addRunStep(input: {
   reasoning?: string;
   seq: number;
   durationMs?: number;
-}): void {
-  db.insert(runSteps)
-    .values({
+}): Promise<void> {
+  await run(
+    db.insert(runSteps).values({
       id: newId("step"),
       workflowRunId: input.workflowRunId,
       agent: input.agent,
       step: input.step,
       status: input.status ?? "ok",
-      inputJson: JSON.stringify(input.input ?? {}),
-      outputJson: JSON.stringify(input.output ?? {}),
+      inputJson: encodeJson(input.input) as string,
+      outputJson: encodeJson(input.output) as string,
       reasoning: input.reasoning ?? "",
       seq: input.seq,
       durationMs: input.durationMs,
-    })
-    .run();
+    }),
+  );
 }
 
-export function listWorkflowRuns(limit = 30): WorkflowRun[] {
-  return db
-    .select()
-    .from(workflowRuns)
-    .orderBy(desc(workflowRuns.startedAt))
-    .limit(limit)
-    .all();
+export function listWorkflowRuns(limit = 30): Promise<WorkflowRun[]> {
+  return rows<WorkflowRun>(
+    db
+      .select()
+      .from(workflowRuns)
+      .orderBy(desc(workflowRuns.startedAt))
+      .limit(limit),
+  );
 }
 
-export function getWorkflowRun(id: string): WorkflowRun | undefined {
-  return db.select().from(workflowRuns).where(eq(workflowRuns.id, id)).get();
+export function getWorkflowRun(id: string): Promise<WorkflowRun | undefined> {
+  return row<WorkflowRun>(
+    db.select().from(workflowRuns).where(eq(workflowRuns.id, id)),
+  );
 }
 
-export function getRunSteps(runId: string): RunStep[] {
-  return db
-    .select()
-    .from(runSteps)
-    .where(eq(runSteps.workflowRunId, runId))
-    .orderBy(runSteps.seq)
-    .all();
+export function getRunSteps(runId: string): Promise<RunStep[]> {
+  return rows<RunStep>(
+    db
+      .select()
+      .from(runSteps)
+      .where(eq(runSteps.workflowRunId, runId))
+      .orderBy(runSteps.seq),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Review tasks
 // ---------------------------------------------------------------------------
 
-export function insertReviewTask(input: {
+export async function insertReviewTask(input: {
   contentItemId: string;
   changeEventId?: string;
   workflowRunId: string;
@@ -494,10 +532,10 @@ export function insertReviewTask(input: {
   reasoning: string;
   reviewReason?: unknown;
   confidence: number;
-}): string {
+}): Promise<string> {
   const id = newId("task");
-  db.insert(reviewTasks)
-    .values({
+  await run(
+    db.insert(reviewTasks).values({
       id,
       contentItemId: input.contentItemId,
       changeEventId: input.changeEventId,
@@ -505,13 +543,13 @@ export function insertReviewTask(input: {
       proposedVersionId: input.proposedVersionId,
       baseVersionId: input.baseVersionId,
       status: input.status,
-      evalScores: JSON.stringify(input.evalScores ?? {}),
-      impact: JSON.stringify(input.impact ?? {}),
+      evalScores: encodeJson(input.evalScores) as string,
+      impact: encodeJson(input.impact) as string,
       reasoning: input.reasoning,
-      reviewReason: JSON.stringify(input.reviewReason ?? {}),
+      reviewReason: encodeJson(input.reviewReason) as string,
       confidence: input.confidence,
-    })
-    .run();
+    }),
+  );
   return id;
 }
 
@@ -520,29 +558,30 @@ export interface ReviewTaskRow {
   item: ContentItem;
 }
 
-export function listReviewTasks(status?: ReviewStatus): ReviewTaskRow[] {
-  const rows = db
-    .select()
-    .from(reviewTasks)
-    .where(status ? eq(reviewTasks.status, status) : undefined)
-    .orderBy(desc(reviewTasks.createdAt))
-    .all();
-  return rows
-    .map((task): ReviewTaskRow | null => {
-      const item = getContentItem(task.contentItemId);
-      return item ? { task, item } : null;
-    })
-    .filter((r): r is ReviewTaskRow => r !== null);
+export async function listReviewTasks(
+  status?: ReviewStatus,
+): Promise<ReviewTaskRow[]> {
+  const taskRows = await rows<typeof reviewTasks.$inferSelect>(
+    db
+      .select()
+      .from(reviewTasks)
+      .where(status ? eq(reviewTasks.status, status) : undefined)
+      .orderBy(desc(reviewTasks.createdAt)),
+  );
+  const result: ReviewTaskRow[] = [];
+  for (const task of taskRows) {
+    const item = await getContentItem(task.contentItemId);
+    if (item) result.push({ task, item });
+  }
+  return result;
 }
 
 export function getReviewTask(
   id: string,
-): typeof reviewTasks.$inferSelect | undefined {
-  return db.select().from(reviewTasks).where(eq(reviewTasks.id, id)).get();
-}
-
-export function getChangeEventById(id: string): ChangeEvent | undefined {
-  return db.select().from(changeEvents).where(eq(changeEvents.id, id)).get();
+): Promise<typeof reviewTasks.$inferSelect | undefined> {
+  return row<typeof reviewTasks.$inferSelect>(
+    db.select().from(reviewTasks).where(eq(reviewTasks.id, id)),
+  );
 }
 
 export interface ReviewTaskDetail {
@@ -556,12 +595,12 @@ export interface ReviewTaskDetail {
   topicSlugs: string[];
 }
 
-export function getReviewTaskDetail(
+export async function getReviewTaskDetail(
   id: string,
-): ReviewTaskDetail | undefined {
-  const task = getReviewTask(id);
+): Promise<ReviewTaskDetail | undefined> {
+  const task = await getReviewTask(id);
   if (!task) return undefined;
-  const item = getContentItem(task.contentItemId);
+  const item = await getContentItem(task.contentItemId);
   if (!item) return undefined;
   // Prefer the explicit base version; fall back to the item's current version
   // (covers older tasks created before base_version_id existed).
@@ -570,24 +609,24 @@ export function getReviewTaskDetail(
     task,
     item,
     baseVersion: baseVersionId
-      ? getContentVersion(baseVersionId)
+      ? await getContentVersion(baseVersionId)
       : undefined,
     proposedVersion: task.proposedVersionId
-      ? getContentVersion(task.proposedVersionId)
+      ? await getContentVersion(task.proposedVersionId)
       : undefined,
     changeEvent: task.changeEventId
-      ? getChangeEventById(task.changeEventId)
+      ? await getChangeEventById(task.changeEventId)
       : undefined,
-    runSteps: task.workflowRunId ? getRunSteps(task.workflowRunId) : [],
-    topicSlugs: getTopicSlugsForItem(item.id),
+    runSteps: task.workflowRunId ? await getRunSteps(task.workflowRunId) : [],
+    topicSlugs: await getTopicSlugsForItem(item.id),
   };
 }
 
-export function updateReviewTask(
+export async function updateReviewTask(
   id: string,
   patch: Partial<typeof reviewTasks.$inferInsert>,
-): void {
-  db.update(reviewTasks).set(patch).where(eq(reviewTasks.id, id)).run();
+): Promise<void> {
+  await run(db.update(reviewTasks).set(patch).where(eq(reviewTasks.id, id)));
 }
 
 // ---------------------------------------------------------------------------
@@ -595,60 +634,70 @@ export function updateReviewTask(
 // ---------------------------------------------------------------------------
 
 /** Flip the live pointer to the proposed version and supersede the old one. */
-export function promoteVersion(
+export async function promoteVersion(
   itemId: string,
   proposedVersionId: string,
-): void {
-  const item = getContentItem(itemId);
+): Promise<void> {
+  const item = await getContentItem(itemId);
   if (!item) return;
   if (item.currentVersionId && item.currentVersionId !== proposedVersionId) {
-    db.update(contentVersions)
-      .set({ status: "superseded" })
-      .where(eq(contentVersions.id, item.currentVersionId))
-      .run();
+    await run(
+      db
+        .update(contentVersions)
+        .set({ status: "superseded" })
+        .where(eq(contentVersions.id, item.currentVersionId)),
+    );
   }
-  db.update(contentVersions)
-    .set({ status: "live" })
-    .where(eq(contentVersions.id, proposedVersionId))
-    .run();
-  db.update(contentItems)
-    .set({
-      currentVersionId: proposedVersionId,
-      status: "fresh",
-      confidence: 1,
-      lastHealedAt: sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-    })
-    .where(eq(contentItems.id, itemId))
-    .run();
+  await run(
+    db
+      .update(contentVersions)
+      .set({ status: "live" })
+      .where(eq(contentVersions.id, proposedVersionId)),
+  );
+  await run(
+    db
+      .update(contentItems)
+      .set({
+        currentVersionId: proposedVersionId,
+        status: "fresh",
+        confidence: 1,
+        lastHealedAt: nowIso(),
+      })
+      .where(eq(contentItems.id, itemId)),
+  );
 }
 
-export function rejectProposedVersion(versionId: string): void {
-  db.update(contentVersions)
-    .set({ status: "rejected" })
-    .where(eq(contentVersions.id, versionId))
-    .run();
+export async function rejectProposedVersion(
+  versionId: string,
+): Promise<void> {
+  await run(
+    db
+      .update(contentVersions)
+      .set({ status: "rejected" })
+      .where(eq(contentVersions.id, versionId)),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Aggregate metrics (dashboard / analytics)
 // ---------------------------------------------------------------------------
 
-export function contentStatusCounts(): Record<ContentStatus, number> {
-  const rows = db
-    .select({
-      status: contentItems.status,
-      count: sql<number>`COUNT(*)`,
-    })
-    .from(contentItems)
-    .groupBy(contentItems.status)
-    .all();
+export async function contentStatusCounts(): Promise<
+  Record<ContentStatus, number>
+> {
+  const statusRows = await rows<{ status: string; count: number }>(
+    db
+      .select({ status: contentItems.status, count: sql<number>`COUNT(*)` })
+      .from(contentItems)
+      .groupBy(contentItems.status),
+  );
   const base: Record<ContentStatus, number> = {
     fresh: 0,
     stale: 0,
     in_review: 0,
     healing: 0,
   };
-  for (const r of rows) base[r.status as ContentStatus] = r.count;
+  for (const r of statusRows) base[r.status as ContentStatus] = num(r.count);
   return base;
 }
 
@@ -661,38 +710,40 @@ export interface DashboardMetrics {
   avgConfidence: number;
 }
 
-export function dashboardMetrics(): DashboardMetrics {
-  const statusCounts = contentStatusCounts();
+export async function dashboardMetrics(): Promise<DashboardMetrics> {
+  const statusCounts = await contentStatusCounts();
   const total = Object.values(statusCounts).reduce((a, b) => a + b, 0);
-  const reviewCounts = countReviewTasksByStatus();
-  const confRow = db
-    .select({ avg: sql<number>`COALESCE(AVG(${contentItems.confidence}), 0)` })
-    .from(contentItems)
-    .get();
-  const healedRow = db
-    .select({ count: sql<number>`COUNT(*)` })
-    .from(contentItems)
-    .where(sql`${contentItems.lastHealedAt} IS NOT NULL`)
-    .get();
+  const reviewCounts = await countReviewTasksByStatus();
+  const confRow = await row<{ avg: number }>(
+    db
+      .select({ avg: sql<number>`COALESCE(AVG(${contentItems.confidence}), 0)` })
+      .from(contentItems),
+  );
+  const healedRow = await row<{ count: number }>(
+    db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(contentItems)
+      .where(sql`${contentItems.lastHealedAt} IS NOT NULL`),
+  );
 
   return {
     totalContent: total,
     statusCounts,
     upToDatePct: total === 0 ? 0 : statusCounts.fresh / total,
     pendingReviews: reviewCounts.needs_human ?? 0,
-    recentHeals: healedRow?.count ?? 0,
-    avgConfidence: Math.round((confRow?.avg ?? 0) * 100) / 100,
+    recentHeals: num(healedRow?.count),
+    avgConfidence: Math.round(num(confRow?.avg) * 100) / 100,
   };
 }
 
-export function countReviewTasksByStatus(): Record<string, number> {
-  const rows = db
-    .select({
-      status: reviewTasks.status,
-      count: sql<number>`COUNT(*)`,
-    })
-    .from(reviewTasks)
-    .groupBy(reviewTasks.status)
-    .all();
-  return Object.fromEntries(rows.map((r) => [r.status, r.count]));
+export async function countReviewTasksByStatus(): Promise<
+  Record<string, number>
+> {
+  const statusRows = await rows<{ status: string; count: number }>(
+    db
+      .select({ status: reviewTasks.status, count: sql<number>`COUNT(*)` })
+      .from(reviewTasks)
+      .groupBy(reviewTasks.status),
+  );
+  return Object.fromEntries(statusRows.map((r) => [r.status, num(r.count)]));
 }

@@ -4,9 +4,10 @@
  * Evaluator, producing a fresh proposal and routing it back for review.
  */
 import { bodyToText, parseBody } from "@/lib/content-types";
-import { embedText, serializeEmbedding } from "@/lib/embeddings";
+import { embedText } from "@/lib/embeddings";
 import { isMockMode, providerLabel } from "@/lib/providers";
 import type { LessonBody, QuestionBody } from "@/lib/content-types";
+import { decodeJson, encodeJson, toDbEmbedding } from "@/db/exec";
 
 import {
   addRunStep,
@@ -46,16 +47,16 @@ export async function runFeedbackLoop(
   taskId: string,
   feedback: string,
 ): Promise<FeedbackResult> {
-  const task = getReviewTask(taskId);
+  const task = await getReviewTask(taskId);
   if (!task) throw new Error(`Review task ${taskId} not found.`);
-  const item = getContentItem(task.contentItemId);
+  const item = await getContentItem(task.contentItemId);
   if (!item || !item.currentVersionId) {
     throw new Error(`Content item for task ${taskId} not found.`);
   }
-  const currentVersion = getContentVersion(item.currentVersionId);
+  const currentVersion = await getContentVersion(item.currentVersionId);
   if (!currentVersion) throw new Error("Current content version missing.");
 
-  const runId = createWorkflowRun({
+  const runId = await createWorkflowRun({
     kind: "feedback_loop",
     input: { taskId, feedback, provider: providerLabel("pro") },
   });
@@ -63,20 +64,22 @@ export async function runFeedbackLoop(
 
   try {
     // Mark the previously-rejected proposal as rejected.
-    if (task.proposedVersionId) rejectProposedVersion(task.proposedVersionId);
+    if (task.proposedVersionId) await rejectProposedVersion(task.proposedVersionId);
 
-    const topicSlugs = getTopicSlugsForItem(item.id);
-    const kgContext = getTopicContext(topicSlugs).map((t) => ({
+    const topicSlugs = await getTopicSlugsForItem(item.id);
+    const kgContext = (await getTopicContext(topicSlugs)).map((t) => ({
       name: t.name,
       description: t.description,
     }));
-    const excerpts = listSources()
-      .map((s) => getLatestSourceVersion(s.id))
+    const sourceList = await listSources();
+    const excerpts = (
+      await Promise.all(sourceList.map((s) => getLatestSourceVersion(s.id)))
+    )
       .filter((v): v is NonNullable<typeof v> => Boolean(v))
       .map((v) => `${v.title}\n${v.body}`);
     const currentBody = parseBody(currentVersion.bodyJson);
     const originalText = bodyToText(item.type, currentBody);
-    const impact = JSON.parse(task.impact || "{}");
+    const impact = decodeJson<{ staleReason?: string }>(task.impact);
     const staleReason: string =
       typeof impact.staleReason === "string"
         ? impact.staleReason
@@ -120,12 +123,12 @@ export async function runFeedbackLoop(
     const citations = (proposed as { citations: string[] }).citations;
     const changeNotes = `${(proposed as { changeNotes: string }).changeNotes} (Revised per reviewer feedback: "${feedback}")`;
 
-    const proposedVersionId = insertProposedVersion({
+    const proposedVersionId = await insertProposedVersion({
       contentItemId: item.id,
-      version: nextContentVersionNumber(item.id),
-      bodyJson: JSON.stringify(proposedBody),
-      embedding: serializeEmbedding(await embedText(proposedText)),
-      sourceVersionIds: JSON.parse(currentVersion.sourceVersionIds || "[]"),
+      version: await nextContentVersionNumber(item.id),
+      bodyJson: proposedBody,
+      embedding: toDbEmbedding(await embedText(proposedText)),
+      sourceVersionIds: decodeJson<string[]>(currentVersion.sourceVersionIds),
       kgSnapshot: { topics: kgContext },
       agentContext: {
         model: providerLabel("pro"),
@@ -136,7 +139,7 @@ export async function runFeedbackLoop(
       },
     });
 
-    addRunStep({
+    await addRunStep({
       workflowRunId: runId,
       agent: "Content Regenerator",
       step: `regenerate-with-feedback:${item.id}`,
@@ -160,7 +163,7 @@ export async function runFeedbackLoop(
     const confidence = computeConfidence(evaluation);
     const autoApprove = shouldAutoApprove(evaluation, guardrails);
 
-    addRunStep({
+    await addRunStep({
       workflowRunId: runId,
       agent: "Content Evaluator",
       step: `evaluate:${item.id}`,
@@ -170,24 +173,24 @@ export async function runFeedbackLoop(
     });
 
     // --- Route back for review --------------------------------------------
-    updateReviewTask(taskId, {
+    await updateReviewTask(taskId, {
       proposedVersionId,
       baseVersionId: currentVersion.id,
       status: "needs_human",
-      evalScores: JSON.stringify({ ...evaluation, guardrails }),
+      evalScores: encodeJson({ ...evaluation, guardrails }) as string,
       reasoning: changeNotes,
-      reviewReason: JSON.stringify({
+      reviewReason: encodeJson({
         kind: "quality",
         title: "Re-review required",
         message:
           "This proposal was regenerated to incorporate your feedback and needs another review before it can go live.",
-      }),
+      }) as string,
       confidence,
       humanFeedback: feedback,
       resolvedAt: null,
     });
 
-    finishWorkflowRun(runId, "completed", {
+    await finishWorkflowRun(runId, "completed", {
       taskId,
       newProposedVersionId: proposedVersionId,
       confidence,
@@ -195,7 +198,7 @@ export async function runFeedbackLoop(
 
     return { runId, newProposedVersionId: proposedVersionId, confidence };
   } catch (error: unknown) {
-    addRunStep({
+    await addRunStep({
       workflowRunId: runId,
       agent: "Orchestrator",
       step: "fatal",
@@ -203,7 +206,7 @@ export async function runFeedbackLoop(
       reasoning: error instanceof Error ? error.message : String(error),
       seq: seq++,
     });
-    finishWorkflowRun(runId, "failed", {
+    await finishWorkflowRun(runId, "failed", {
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;

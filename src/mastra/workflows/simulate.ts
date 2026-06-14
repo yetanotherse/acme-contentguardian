@@ -4,7 +4,8 @@
  * affected content as stale. After this, the healing pipeline has something to
  * detect, triage, and fix.
  */
-import { embedText, serializeEmbedding } from "@/lib/embeddings";
+import { embedText } from "@/lib/embeddings";
+import { toDbEmbedding } from "@/db/exec";
 import {
   getLatestSourceVersion,
   insertChangeEvent,
@@ -28,23 +29,23 @@ export async function applySimulatedUpdate(): Promise<SimulationResult> {
   const affectedTopics = new Set<string>();
 
   for (const change of SEED_SOURCE_CHANGES) {
-    const latest = getLatestSourceVersion(change.sourceId);
+    const latest = await getLatestSourceVersion(change.sourceId);
     // Idempotent: skip sources already advanced to v2+.
     if (latest && latest.version >= 2) continue;
 
     const embedding = await embedText(change.newVersion.body);
-    insertSourceVersion({
+    await insertSourceVersion({
       id: change.newVersion.id,
       sourceId: change.sourceId,
       version: (latest?.version ?? 1) + 1,
       title: change.newVersion.title,
       body: change.newVersion.body,
-      embedding: serializeEmbedding(embedding),
+      embedding: toDbEmbedding(embedding),
     });
     newSourceVersions++;
 
     for (const c of change.changes) {
-      insertChangeEvent({
+      await insertChangeEvent({
         sourceVersionId: change.newVersion.id,
         changeType: c.changeType,
         summary: c.summary,
@@ -68,7 +69,7 @@ export async function applySimulatedUpdate(): Promise<SimulationResult> {
     };
   }
 
-  const staleItems = markStaleByTopics([...affectedTopics]);
+  const staleItems = await markStaleByTopics([...affectedTopics]);
 
   return {
     applied: true,
