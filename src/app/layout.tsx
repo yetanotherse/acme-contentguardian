@@ -21,11 +21,15 @@ export const metadata: Metadata = {
     "Keeps generated certification content accurate as source materials evolve, with human-in-the-loop governance.",
 };
 
-export default function RootLayout({
+// The dashboard is DB-backed and inherently dynamic; never statically prerender
+// (this also keeps the build from touching the database, e.g. for /_not-found).
+export const dynamic = "force-dynamic";
+
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const mock = isMockMode();
-  const pendingReviews = countReviewTasksByStatus().needs_human ?? 0;
+  const pendingReviews = (await countReviewTasksByStatus()).needs_human ?? 0;
 
   return (
     <html

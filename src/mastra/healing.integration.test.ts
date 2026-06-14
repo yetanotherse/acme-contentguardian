@@ -42,14 +42,14 @@ describe("simulate → heal → review", () => {
     expect(summary.needsReview).toBe(2);
 
     // A full reasoning trace is persisted.
-    const steps = getRunSteps(summary.runId);
+    const steps = await getRunSteps(summary.runId);
     expect(steps.length).toBeGreaterThanOrEqual(13);
     expect(steps.some((s) => s.agent === "Change Detector")).toBe(true);
     expect(steps.some((s) => s.agent === "Content Evaluator")).toBe(true);
   });
 
-  it("creates review tasks with a mix of statuses", () => {
-    const tasks = listReviewTasks();
+  it("creates review tasks with a mix of statuses", async () => {
+    const tasks = await listReviewTasks();
     expect(tasks).toHaveLength(5);
     expect(tasks.filter((t) => t.task.status === "auto_approved")).toHaveLength(
       3,
@@ -57,21 +57,21 @@ describe("simulate → heal → review", () => {
     expect(tasks.filter((t) => t.task.status === "needs_human")).toHaveLength(2);
   });
 
-  it("auto-approved items are promoted to fresh/live", () => {
-    const iac = getContentItem("ci_q_iac_dm");
+  it("auto-approved items are promoted to fresh/live", async () => {
+    const iac = await getContentItem("ci_q_iac_dm");
     expect(iac?.status).toBe("fresh");
     expect(iac?.lastHealedAt).toBeTruthy();
   });
 
-  it("retains a distinct base version on every task (so diffs render)", () => {
-    for (const { task } of listReviewTasks()) {
+  it("retains a distinct base version on every task (so diffs render)", async () => {
+    for (const { task } of await listReviewTasks()) {
       expect(task.baseVersionId).toBeTruthy();
       expect(task.baseVersionId).not.toBe(task.proposedVersionId);
     }
   });
 
-  it("stores a human-readable review reason explaining each routing decision", () => {
-    const tasks = listReviewTasks();
+  it("stores a human-readable review reason explaining each routing decision", async () => {
+    const tasks = await listReviewTasks();
     for (const { task } of tasks) {
       const reason = JSON.parse(task.reviewReason || "{}");
       expect(reason.message).toBeTruthy();
@@ -89,25 +89,25 @@ describe("simulate → heal → review", () => {
   });
 
   it("reject feeds back a revised proposal that stays in review", async () => {
-    const task = listReviewTasks("needs_human")[0];
+    const task = (await listReviewTasks("needs_human"))[0];
     const originalProposed = task.task.proposedVersionId;
     const result = await rejectTask(
       task.task.id,
       "Mention Vertex AI Search by name and add a RAG reference architecture.",
     );
     expect(result.newProposedVersionId).not.toBe(originalProposed);
-    const after = getReviewTask(task.task.id);
+    const after = await getReviewTask(task.task.id);
     expect(after?.status).toBe("needs_human");
     expect(after?.proposedVersionId).toBe(result.newProposedVersionId);
   });
 
   it("approve promotes the proposed version to live", async () => {
-    const task = listReviewTasks("needs_human")[0];
+    const task = (await listReviewTasks("needs_human"))[0];
     const result = await approveTask(task.task.id);
     expect(result.approved).toBe(true);
-    const item = getContentItem(result.contentItemId);
+    const item = await getContentItem(result.contentItemId);
     expect(item?.status).toBe("fresh");
     expect(item?.currentVersionId).toBe(result.versionId);
-    expect(getReviewTask(task.task.id)?.status).toBe("approved");
+    expect((await getReviewTask(task.task.id))?.status).toBe("approved");
   });
 });

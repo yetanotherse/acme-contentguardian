@@ -8,10 +8,10 @@
  * orchestration, persistence, and tracing are identical either way.
  */
 import { bodyToText, parseBody } from "@/lib/content-types";
-import { embedText, serializeEmbedding } from "@/lib/embeddings";
-import { cosineSimilarity } from "@/lib/embeddings";
+import { cosineSimilarity, embedText } from "@/lib/embeddings";
 import { providerLabel, isMockMode } from "@/lib/providers";
 import type { LessonBody, QuestionBody } from "@/lib/content-types";
+import { decodeJson, toDbEmbedding } from "@/db/exec";
 
 import {
   addRunStep,
@@ -77,14 +77,15 @@ async function gatherChanges(
   const enriched: EnrichedChange[] = [];
   const sourceVersionIds: string[] = [];
   const excerpts: string[] = [];
+  const sourceList = await listSources();
 
-  for (const source of listSources()) {
-    const latest = getLatestSourceVersion(source.id);
+  for (const source of sourceList) {
+    const latest = await getLatestSourceVersion(source.id);
     if (!latest || latest.version <= 1) continue;
     sourceVersionIds.push(latest.id);
     excerpts.push(`${latest.title}\n${latest.body}`);
 
-    const events = getChangeEventsForVersions([latest.id]);
+    const events = await getChangeEventsForVersions([latest.id]);
     if (events.length > 0) {
       for (const e of events) {
         enriched.push({
@@ -93,7 +94,7 @@ async function gatherChanges(
             summary: e.summary,
             detail: e.detail,
             severity: e.severity,
-            affectedTopics: JSON.parse(e.affectedTopics) as string[],
+            affectedTopics: decodeJson<string[]>(e.affectedTopics),
           },
           changeEventId: e.id,
           sourceVersionId: latest.id,
@@ -101,13 +102,13 @@ async function gatherChanges(
       }
     } else {
       // No persisted detection — run the detector agent on the version delta.
-      const versions = getSourceVersions(source.id);
+      const versions = await getSourceVersions(source.id);
       const previous = versions[1];
       const detected = await detectChanges({
         sourceId: source.id,
         oldBody: previous?.body ?? "",
         newBody: latest.body,
-        topicSlugs: getTopicContext([]).map((t) => t.slug),
+        topicSlugs: (await getTopicContext([])).map((t) => t.slug),
       });
       for (const c of detected.changes) {
         enriched.push({ change: c, sourceVersionId: latest.id });
@@ -115,11 +116,11 @@ async function gatherChanges(
     }
   }
 
-  addRunStep({
+  await addRunStep({
     workflowRunId: runId,
     agent: "Change Detector",
     step: "detectChanges",
-    input: { sources: listSources().map((s) => s.name) },
+    input: { sources: sourceList.map((s) => s.name) },
     output: { changes: enriched.map((e) => e.change) },
     reasoning: `Detected ${enriched.length} change(s) across ${sourceVersionIds.length} updated source version(s): ${enriched
       .map((e) => `${e.change.changeType} (sev ${e.change.severity})`)
@@ -135,7 +136,7 @@ async function gatherChanges(
 async function prefilterCandidates(
   changes: Change[],
 ): Promise<ContentCandidate[]> {
-  const all = getContentCandidates();
+  const all = await getContentCandidates();
   const changeEmbeddings = await Promise.all(
     changes.map((c) => embedText(`${c.summary}. ${c.detail}`)),
   );
@@ -162,7 +163,7 @@ async function prefilterCandidates(
 export async function runHealing(
   kind: "healing" | "full_scan" = "healing",
 ): Promise<HealingSummary> {
-  const runId = createWorkflowRun({
+  const runId = await createWorkflowRun({
     kind,
     input: {
       trigger: kind === "full_scan" ? "manual_scan" : "source_change",
@@ -179,7 +180,7 @@ export async function runHealing(
     );
 
     if (changes.length === 0) {
-      addRunStep({
+      await addRunStep({
         workflowRunId: runId,
         agent: "Orchestrator",
         step: "noop",
@@ -187,7 +188,7 @@ export async function runHealing(
           "No updated source versions found. Run 'Simulate Google Cloud Next Update' first.",
         seq: seq++,
       });
-      finishWorkflowRun(runId, "completed", {
+      await finishWorkflowRun(runId, "completed", {
         changesDetected: 0,
         itemsImpacted: 0,
         autoApproved: 0,
@@ -208,7 +209,7 @@ export async function runHealing(
     const impactStart = Date.now();
     const candidates = await prefilterCandidates(changeList);
     const impact = await analyzeImpact({ changes: changeList, candidates });
-    addRunStep({
+    await addRunStep({
       workflowRunId: runId,
       agent: "Impact Analyzer",
       step: "analyzeImpact",
@@ -227,13 +228,13 @@ export async function runHealing(
     let needsReview = 0;
 
     for (const impacted of impact.items) {
-      const item = getContentItem(impacted.contentItemId);
+      const item = await getContentItem(impacted.contentItemId);
       if (!item || !item.currentVersionId) continue;
-      const currentVersion = getContentVersion(item.currentVersionId);
+      const currentVersion = await getContentVersion(item.currentVersionId);
       if (!currentVersion) continue;
 
-      const topicSlugs = getTopicSlugsForItem(item.id);
-      const kgContext = getTopicContext(topicSlugs).map((t) => ({
+      const topicSlugs = await getTopicSlugsForItem(item.id);
+      const kgContext = (await getTopicContext(topicSlugs)).map((t) => ({
         name: t.name,
         description: t.description,
       }));
@@ -284,11 +285,11 @@ export async function runHealing(
         const changeNotes = (proposed as { changeNotes: string }).changeNotes;
 
         const proposedEmbedding = await embedText(proposedText);
-        const proposedVersionId = insertProposedVersion({
+        const proposedVersionId = await insertProposedVersion({
           contentItemId: item.id,
-          version: nextContentVersionNumber(item.id),
-          bodyJson: JSON.stringify(proposedBody),
-          embedding: serializeEmbedding(proposedEmbedding),
+          version: await nextContentVersionNumber(item.id),
+          bodyJson: proposedBody,
+          embedding: toDbEmbedding(proposedEmbedding),
           sourceVersionIds,
           kgSnapshot: { topics: kgContext },
           agentContext: {
@@ -300,7 +301,7 @@ export async function runHealing(
           },
         });
 
-        addRunStep({
+        await addRunStep({
           workflowRunId: runId,
           agent: "Content Regenerator",
           step: `regenerate:${item.id}`,
@@ -331,7 +332,7 @@ export async function runHealing(
         const autoApprove =
           shouldAutoApprove(evaluation, guardrails) && !blockedByPolicy;
 
-        addRunStep({
+        await addRunStep({
           workflowRunId: runId,
           agent: "Content Evaluator",
           step: `evaluate:${item.id}`,
@@ -359,7 +360,7 @@ export async function runHealing(
           evaluation,
           guardrails,
         });
-        insertReviewTask({
+        await insertReviewTask({
           contentItemId: item.id,
           changeEventId: matchingChange.changeEventId,
           workflowRunId: runId,
@@ -374,14 +375,14 @@ export async function runHealing(
         });
 
         if (autoApprove) {
-          promoteVersion(item.id, proposedVersionId);
+          await promoteVersion(item.id, proposedVersionId);
           autoApproved++;
         } else {
-          setContentItemStatus(item.id, "in_review");
+          await setContentItemStatus(item.id, "in_review");
           needsReview++;
         }
       } catch (error: unknown) {
-        addRunStep({
+        await addRunStep({
           workflowRunId: runId,
           agent: "Orchestrator",
           step: `error:${item.id}`,
@@ -401,7 +402,7 @@ export async function runHealing(
       autoApproved,
       needsReview,
     };
-    addRunStep({
+    await addRunStep({
       workflowRunId: runId,
       agent: "Triage",
       step: "summary",
@@ -409,11 +410,11 @@ export async function runHealing(
       reasoning: `Healing complete: ${impact.items.length} item(s) impacted → ${autoApproved} auto-approved, ${needsReview} routed to human review.`,
       seq: seq++,
     });
-    finishWorkflowRun(runId, "completed", summary);
+    await finishWorkflowRun(runId, "completed", summary);
 
     return { runId, ...summary };
   } catch (error: unknown) {
-    addRunStep({
+    await addRunStep({
       workflowRunId: runId,
       agent: "Orchestrator",
       step: "fatal",
@@ -421,7 +422,7 @@ export async function runHealing(
       reasoning: error instanceof Error ? error.message : String(error),
       seq: seq++,
     });
-    finishWorkflowRun(runId, "failed", {
+    await finishWorkflowRun(runId, "failed", {
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;

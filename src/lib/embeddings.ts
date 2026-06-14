@@ -14,7 +14,8 @@
 import { embed, embedMany } from "ai";
 
 import {
-  MOCK_EMBED_DIM,
+  EMBEDDING_DIM,
+  embeddingProviderOptions,
   getEmbeddingModel,
   isMockMode,
 } from "./providers";
@@ -75,7 +76,7 @@ function tokenize(text: string): string[] {
  * sharing vocabulary land close in cosine space — good enough to drive impact
  * analysis recall in the demo, and fully deterministic.
  */
-export function hashEmbedding(text: string, dim = MOCK_EMBED_DIM): number[] {
+export function hashEmbedding(text: string, dim = EMBEDDING_DIM): number[] {
   const vector = new Array<number>(dim).fill(0);
   for (const token of tokenize(text)) {
     const h = fnv1a(token);
@@ -97,6 +98,7 @@ export async function embedText(text: string): Promise<number[]> {
   const { embedding } = await embed({
     model: getEmbeddingModel(),
     value: text,
+    providerOptions: embeddingProviderOptions,
   });
   return embedding;
 }
@@ -107,6 +109,7 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
   const { embeddings } = await embedMany({
     model: getEmbeddingModel(),
     values: texts,
+    providerOptions: embeddingProviderOptions,
   });
   return embeddings;
 }

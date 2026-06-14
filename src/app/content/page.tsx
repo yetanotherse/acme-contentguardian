@@ -8,8 +8,8 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default function ContentLibraryPage() {
-  const items: LibraryItem[] = getContentCandidates().map((c) => ({
+export default async function ContentLibraryPage() {
+  const items: LibraryItem[] = (await getContentCandidates()).map((c) => ({
     id: c.item.id,
     title: c.item.title,
     type: c.item.type,

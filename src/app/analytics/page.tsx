@@ -19,10 +19,12 @@ import { pct } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
-export default function AnalyticsPage() {
-  const status = contentStatusCounts();
-  const reviews = countReviewTasksByStatus();
-  const runs = listWorkflowRuns(100);
+export default async function AnalyticsPage() {
+  const [status, reviews, runs] = await Promise.all([
+    contentStatusCounts(),
+    countReviewTasksByStatus(),
+    listWorkflowRuns(100),
+  ]);
 
   const totalProposals = Object.values(reviews).reduce((a, b) => a + b, 0);
   const autoApproved = reviews.auto_approved ?? 0;

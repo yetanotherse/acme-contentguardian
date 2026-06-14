@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 
 import { getReviewTaskDetail } from "@/db/queries";
 import { bodyToText, parseBody } from "@/lib/content-types";
+import { decodeJson } from "@/db/exec";
 import {
   Card,
   CardContent,
@@ -35,14 +36,18 @@ export default async function TaskDetailPage({
   params: Promise<{ taskId: string }>;
 }) {
   const { taskId } = await params;
-  const detail = getReviewTaskDetail(taskId);
+  const detail = await getReviewTaskDetail(taskId);
   if (!detail) notFound();
 
   const { task, item, baseVersion, proposedVersion, changeEvent, runSteps } =
     detail;
-  const evalScores = JSON.parse(task.evalScores || "{}");
-  const impact = JSON.parse(task.impact || "{}");
-  const reviewReason = JSON.parse(task.reviewReason || "{}");
+  const evalScores = decodeJson<Record<string, unknown>>(task.evalScores);
+  const impact = decodeJson<{
+    impactScore?: number;
+    staleReason?: string;
+    affectedAspects?: string[];
+  }>(task.impact);
+  const reviewReason = decodeJson<Record<string, unknown>>(task.reviewReason);
   const affectedAspects: string[] = Array.isArray(impact.affectedAspects)
     ? impact.affectedAspects
     : [];

@@ -31,7 +31,7 @@ export const fetchKGContextTool = createTool({
     ),
   }),
   execute: async ({ topicSlugs }) => {
-    const topics = getTopicContext(topicSlugs).map((t) => ({
+    const topics = (await getTopicContext(topicSlugs)).map((t) => ({
       slug: t.slug,
       name: t.name,
       description: t.description,
@@ -62,7 +62,7 @@ export const findAffectedContentTool = createTool({
   execute: async ({ changeText, topicSlugs, limit }) => {
     const queryEmbedding = await embedText(changeText);
     const topicSet = new Set(topicSlugs);
-    const ranked = getContentCandidates()
+    const ranked = (await getContentCandidates())
       .map((c) => ({
         contentItemId: c.item.id,
         title: c.item.title,

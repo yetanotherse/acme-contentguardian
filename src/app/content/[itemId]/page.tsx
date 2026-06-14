@@ -20,7 +20,8 @@ import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/status-badge";
 import { ContentBodyView } from "@/components/content-body-view";
 import { DiffView } from "@/components/diff-view";
-import { Provenance } from "@/components/content/provenance";
+import { Provenance, type ProvenanceData } from "@/components/content/provenance";
+import { decodeJson } from "@/db/exec";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -32,31 +33,35 @@ export default async function ContentDetailPage({
   params: Promise<{ itemId: string }>;
 }) {
   const { itemId } = await params;
-  const item = getContentItem(itemId);
+  const item = await getContentItem(itemId);
   if (!item) notFound();
 
-  const versions = getContentVersions(itemId);
+  const versions = await getContentVersions(itemId);
   const current = item.currentVersionId
-    ? getContentVersion(item.currentVersionId)
+    ? await getContentVersion(item.currentVersionId)
     : versions[0];
-  const topicSlugs = getTopicSlugsForItem(itemId);
+  const topicSlugs = await getTopicSlugsForItem(itemId);
 
   // Diff: current live vs the version immediately before it (if any).
   const liveIndex = versions.findIndex((v) => v.id === current?.id);
   const previous = liveIndex >= 0 ? versions[liveIndex + 1] : versions[1];
 
   const currentBody = current ? parseBody(current.bodyJson) : null;
-  const agentContext = current ? JSON.parse(current.agentContext || "{}") : {};
-  const kgSnapshot = current ? JSON.parse(current.kgSnapshot || "{}") : {};
+  const agentContext: ProvenanceData["agentContext"] = current
+    ? decodeJson<ProvenanceData["agentContext"]>(current.agentContext)
+    : {};
+  const kgSnapshot = current
+    ? decodeJson<{ topics?: unknown[] }>(current.kgSnapshot)
+    : {};
   const kgTopics: string[] = Array.isArray(kgSnapshot.topics)
     ? kgSnapshot.topics.map((t: unknown) =>
         typeof t === "string" ? t : (t as { name?: string }).name ?? "",
       )
     : topicSlugs;
   const sourceVersionIds: string[] = current
-    ? JSON.parse(current.sourceVersionIds || "[]")
+    ? decodeJson<string[]>(current.sourceVersionIds)
     : [];
-  const sourceVersions = getSourceVersionsByIds(sourceVersionIds);
+  const sourceVersions = await getSourceVersionsByIds(sourceVersionIds);
 
   return (
     <div className="space-y-5 max-w-6xl">
