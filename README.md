@@ -29,13 +29,13 @@ npm run dev         # http://localhost:3000
 
 No `.env` required. To use **live Gemini** instead of the deterministic mock, copy `.env.example` to `.env` and set `GOOGLE_GENERATIVE_AI_API_KEY` (get one at <https://aistudio.google.com/apikey>), then re-seed.
 
-| Script | Purpose |
-| --- | --- |
-| `npm run db:seed` | Reset DB to the initial seeded PCA library |
-| `npm run dev` | Start the Next.js dev server |
-| `npm run build` | Production build |
-| `npm test` | Unit + integration tests (Vitest) |
-| `npm run db:studio` | Browse the DB with Drizzle Studio |
+| Script              | Purpose                                    |
+| ------------------- | ------------------------------------------ |
+| `npm run db:seed`   | Reset DB to the initial seeded PCA library |
+| `npm run dev`       | Start the Next.js dev server               |
+| `npm run build`     | Production build                           |
+| `npm test`          | Unit + integration tests (Vitest)          |
+| `npm run db:studio` | Browse the DB with Drizzle Studio          |
 
 ---
 
@@ -130,12 +130,12 @@ erDiagram
 
 ## 🤖 Agents & workflows
 
-| Agent | Model tier | Output (Zod) | Role |
-| --- | --- | --- | --- |
-| **Change Detector** | flash | `ChangeSet` | Classify source deltas (deprecation/addition/emphasis/wording) with severity + affected topics |
-| **Impact Analyzer** | flash | `ImpactReport` | Fuse embedding similarity + KG topic overlap to flag stale items |
-| **Content Regenerator** | pro | `ProposedQuestion`/`ProposedLesson` | Produce grounded updates with change notes + citations |
-| **Content Evaluator** | flash | `Evaluation` | LLM-as-judge: groundedness, accuracy, pedagogy, hallucination risk |
+| Agent                   | Model tier | Output (Zod)                        | Role                                                                                           |
+| ----------------------- | ---------- | ----------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Change Detector**     | flash      | `ChangeSet`                         | Classify source deltas (deprecation/addition/emphasis/wording) with severity + affected topics |
+| **Impact Analyzer**     | flash      | `ImpactReport`                      | Fuse embedding similarity + KG topic overlap to flag stale items                               |
+| **Content Regenerator** | pro        | `ProposedQuestion`/`ProposedLesson` | Produce grounded updates with change notes + citations                                         |
+| **Content Evaluator**   | flash      | `Evaluation`                        | LLM-as-judge: groundedness, accuracy, pedagogy, hallucination risk                             |
 
 **Workflows** (orchestrators in `src/mastra/workflows`, each persisting a step trace):
 
@@ -147,7 +147,7 @@ erDiagram
 
 1. The evaluator clears every dimension floor (groundedness ≥ 0.85, accuracy ≥ 0.85, **pedagogy ≥ 0.85**, hallucination ≤ 0.15).
 2. Deterministic structural guardrails pass (valid answer index, citations present, sufficient length).
-3. **Governance policy:** the triggering change is *mechanical*. Substantive scope changes — those the Change Detector classifies as `addition` or `emphasis` (new curriculum scope) — always require human sign-off, because publishing new scope is an editorial decision. Mechanical `deprecation` / `wording` fixes may auto-approve. This makes the auto-vs-human mix a function of the **kind of change** the agents detected, not a hardcoded item list — so it behaves identically in mock and live mode (e.g., in live mode a GenAI rewrite can score 0.99 and still, correctly, be held for review).
+3. **Governance policy:** the triggering change is _mechanical_. Substantive scope changes — those the Change Detector classifies as `addition` or `emphasis` (new curriculum scope) — always require human sign-off, because publishing new scope is an editorial decision. Mechanical `deprecation` / `wording` fixes may auto-approve. This makes the auto-vs-human mix a function of the **kind of change** the agents detected, not a hardcoded item list — so it behaves identically in mock and live mode (e.g., in live mode a GenAI rewrite can score 0.99 and still, correctly, be held for review).
 
 ---
 
@@ -155,10 +155,10 @@ erDiagram
 
 ContentGuardian runs in one of two modes, chosen **automatically at runtime**:
 
-| Condition | Mode | Behavior |
-| --- | --- | --- |
-| `GOOGLE_GENERATIVE_AI_API_KEY` **set** | **Real** | Agents call live Gemini via the Vercel AI SDK inside Mastra; embeddings use `gemini-embedding-001`. |
-| **No key** (default) | **Mock** | A deterministic, scripted provider drives the **exact same** workflow, persistence, and trace code paths; embeddings use feature hashing. |
+| Condition                              | Mode     | Behavior                                                                                                                                  |
+| -------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `GOOGLE_GENERATIVE_AI_API_KEY` **set** | **Real** | Agents call live Gemini via the Vercel AI SDK inside Mastra; embeddings use `gemini-embedding-001`.                                       |
+| **No key** (default)                   | **Mock** | A deterministic, scripted provider drives the **exact same** workflow, persistence, and trace code paths; embeddings use feature hashing. |
 
 The mock (`src/mastra/mock/scenario.ts`) hard-codes a realistic Google Cloud Next scenario and **always returns schema-valid output**, so the pipeline behaves identically with or without a key. Marquee items get hand-authored, high-quality proposals; others get a templated rewrite — yielding a realistic mix of auto-approved and human-review outcomes. Embeddings in mock mode are deterministic per item, so impact analysis is fully reproducible.
 
@@ -171,6 +171,7 @@ The mock (`src/mastra/mock/scenario.ts`) hard-codes a realistic Google Cloud Nex
 ContentGuardian runs on **SQLite locally** and **Supabase (Postgres + pgvector) in production**, selected automatically — additively, with zero change to the local flow.
 
 **Selection.** The client factory (`src/db/client.ts`) reads `DATABASE_URL`:
+
 - starts with `postgres://` / `postgresql://` → **Postgres** (postgres-js) using `schema.pg.ts`;
 - otherwise (default) → **SQLite** (better-sqlite3) using `schema.ts` — the zero-config local path.
 
@@ -198,8 +199,9 @@ See **[Deploying to Vercel + Supabase](#-deploying-to-vercel--supabase)** for se
 
 ## 🧠 Architecture decisions
 
-- **Drizzle, dual-dialect: SQLite locally, Supabase/Postgres in production.** Enables true zero-config local dev (`npm run dev`, no services) while being one env var away from a stateful serverless deployment. Implemented via the client factory + exec adapters above — the query layer (`src/db/queries.ts`) is written once. In production, embeddings are real **pgvector** `vector` columns (indexable, native `<=>`); the fused impact *scoring* keeps TS `cosineSimilarity` in both dialects (it blends topic-overlap + severity, not a single kNN), and a `<=>` kNN prefilter is a drop-in for very large libraries.
+- **Drizzle, dual-dialect: SQLite locally, Supabase/Postgres in production.** Enables true zero-config local dev (`npm run dev`, no services) while being one env var away from a stateful serverless deployment. Implemented via the client factory + exec adapters above — the query layer (`src/db/queries.ts`) is written once. In production, embeddings are real **pgvector** `vector` columns (indexable, native `<=>`); the fused impact _scoring_ keeps TS `cosineSimilarity` in both dialects (it blends topic-overlap + severity, not a single kNN), and a `<=>` kNN prefilter is a drop-in for very large libraries.
 - **Mastra for orchestration.** It is TypeScript-native and gives first-class agents, tools, structured output (Zod), model routing, and observability with far less glue than hand-rolling AI SDK calls. The workflow orchestrators compose Mastra agents and persist their own step traces for full explainability in the UI.
+- **Policy-based human oversight (Governance)** Even when the AI gives very high confidence scores, certain types of changes, like introducing an entirely new curriculum area are still routed to human review.
 - **Gemini via the Vercel AI SDK.** Strong structured-output support; cheap `gemini-2.5-flash` for detect/impact/judge and `gemini-2.5-pro` for regeneration. Because Gemini rejects function-calling + a JSON response schema in one request, structured output uses a separate structuring pass (`src/mastra/llm.ts`). A retry/repair pass plus deterministic guardrails handle occasional malformed output.
 - **Deterministic mock fallback.** Documented above — a demo-only convenience.
 
@@ -246,13 +248,15 @@ Vitest runs unit tests (cosine similarity, deterministic embeddings, guardrails 
 
 Vercel's filesystem is ephemeral, so production uses Supabase Postgres (with pgvector) instead of SQLite. The app already supports this — you only provide connection strings.
 
-**1. Create a Supabase project** (free tier is fine). The `vector` extension is created automatically by the first migration (`CREATE EXTENSION IF NOT EXISTS vector;`), or you can enable it under *Database → Extensions*.
+**1. Create a Supabase project** (free tier is fine). The `vector` extension is created automatically by the first migration (`CREATE EXTENSION IF NOT EXISTS vector;`), or you can enable it under _Database → Extensions_.
 
-**2. Grab two connection strings** (Supabase → *Project Settings → Database*):
+**2. Grab two connection strings** (Supabase → _Project Settings → Database_):
+
 - **Transaction pooler** (port **6543**, `?pgbouncer=true`) → `DATABASE_URL` (runtime; serverless-friendly).
 - **Direct** (port **5432**) → `DIRECT_URL` (migrations only).
 
 **3. Run migrations + seed against Supabase** (locally, once):
+
 ```bash
 export DATABASE_URL="postgresql://…:6543/postgres?pgbouncer=true"
 export DIRECT_URL="postgresql://…:5432/postgres"
