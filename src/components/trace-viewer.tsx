@@ -71,12 +71,15 @@ export function TraceViewer({ steps }: { steps: RunStep[] }) {
   );
 }
 
-function TracePayload({ label, json }: { label: string; json: string }) {
-  let pretty = json;
+function TracePayload({ label, json }: { label: string; json: unknown }) {
+  // SQLite returns JSON columns as strings; Postgres jsonb returns objects.
+  // Normalize both to a pretty-printed string before rendering.
+  let pretty: string;
   try {
-    pretty = JSON.stringify(JSON.parse(json), null, 2);
+    const value = typeof json === "string" ? JSON.parse(json) : json;
+    pretty = JSON.stringify(value, null, 2);
   } catch {
-    // keep raw
+    pretty = typeof json === "string" ? json : JSON.stringify(json);
   }
   return (
     <div className="rounded-md border bg-muted/40">
