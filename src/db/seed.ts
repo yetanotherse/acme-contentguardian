@@ -44,8 +44,21 @@ async function clearAll(): Promise<void> {
   await run(db.delete(sources));
 }
 
-export async function seedDatabase(): Promise<void> {
-  await runMigrations();
+/**
+ * Seed (or re-seed) the database.
+ *
+ * `migrate` controls whether schema migrations run first:
+ *   - CLI (`db:seed`/`db:reset`) and tests → default `true` (local convenience;
+ *     the drizzle migration folder is on disk).
+ *   - The in-app "Reset Demo" route passes `false` — on Vercel the migration
+ *     files aren't in the serverless bundle, and the schema already exists
+ *     (migrations are applied once at deploy via `npm run db:migrate:pg`).
+ *     Reset only needs to clear + re-insert data.
+ */
+export async function seedDatabase(
+  opts: { migrate?: boolean } = {},
+): Promise<void> {
+  if (opts.migrate ?? true) await runMigrations();
   await clearAll();
 
   // --- Embed everything up front (one batched call in real mode) -----------

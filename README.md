@@ -268,7 +268,9 @@ npm run db:seed         # seeds Supabase (detects Postgres from DATABASE_URL)
 | `DIRECT_URL` | Supabase **direct** URL (port 5432) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | your Gemini key |
 
-`next build` runs as-is. `better-sqlite3`, `postgres`, and `@mastra/core` are declared in `serverExternalPackages`. postgres-js is initialized with `prepare: false` because the Supabase transaction pooler (pgBouncer) doesn't support prepared statements, and `max: 1` to keep the serverless connection footprint small.
+`next build` runs as-is. `better-sqlite3`, `postgres`, and `@mastra/core` are declared in `serverExternalPackages`. postgres-js is initialized with `prepare: false` (the Supabase transaction pooler / pgBouncer doesn't support prepared statements), a small connection pool (`max`, default 10, override via `DB_POOL_MAX`), `connect_timeout` (so an unreachable DB errors fast instead of hanging), and `fetch_types: false`.
+
+> **Migrations run once at deploy time** (step 3, `db:migrate:pg`) — never at runtime. The serverless functions do **not** bundle the `drizzle/` migration files, and don't need to: the in-app **Reset Demo** button (`/api/demo/reset`) only **clears + re-seeds data** against the already-migrated schema. (No `vercel.json`/`includeFiles` workaround is needed.) If you change the schema, re-run `npm run db:migrate:pg` before redeploying.
 
 > The same code runs locally on SQLite with **no** `DATABASE_URL` set — nothing about local development changes.
 
